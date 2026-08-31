@@ -1,0 +1,72 @@
+name: dnf-market-sentinel
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: dnf_market
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel_local
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d dnf_market"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  market-api:
+    build:
+      context: .
+      dockerfile: services/market/Dockerfile
+    command: npm run api
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://sentinel:sentinel_local@postgres:5432/dnf_market
+      WEB_ORIGIN: http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  collector-worker:
+    build:
+      context: .
+      dockerfile: services/market/Dockerfile
+    command: npm run worker
+    environment:
+      DATABASE_URL: postgresql://sentinel:sentinel_local@postgres:5432/dnf_market
+      NEOPLE_API_KEY: ${NEOPLE_API_KEY}
+      COLLECT_INTERVAL_MS: 600000
+      COLLECT_CONCURRENCY: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      MARKET_API_URL: http://market-api:4000
+      NEXT_PUBLIC_MARKET_API_URL: http://localhost:4000
+      NEOPLE_API_KEY: ${NEOPLE_API_KEY}
+    depends_on:
+      market-api:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
